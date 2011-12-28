@@ -5,6 +5,9 @@ require_once("../lib/mail_tools/parse_mail/v2/rfc822_addresses.php") ;
 require_once("../lib/mail_tools/parse_mail/v2/mime_parser.php") ;
 require_once("./config/mail_config.php") ;
 
+define('NOT_HAVE_ATTATCHMENT', 0) ;
+define('HAVE_ATTATCHMENT', 1) ;
+
 class ParseMailCommand extends CConsoleCommand{
 
 	public function run(){
@@ -21,29 +24,87 @@ class ParseMailCommand extends CConsoleCommand{
 				$objParser   = new MailParser($strFilePath) ;
 				$aDecode	 = $objParser->decodeMail() ;
 				if( self::_filterMails( $aDecode ) ){
-					$strMailSql     = '' ;
-					$strTo			= $objParser->getHeader('to') ;
-					$strCC			= $objParser->getHeader('cc') ;
-					$strFrom		= $objParser->getHeader('from') ;
-					$strMailHeader  = $objParser->getHeader() ;
 					// subject 取值要放在Mask计算前面，Mask可能会更改subject
-					$strSubject		= $objParser->getSubject('subject') ;
+					$strSubject     = $objParser->getSubject('subject') ; 
 					$strListMask    = self::_buildMailListId($strSubject) ;
-					$strText		= $objParser->getMessageBody('text') ;
-					$strHtml		= $objParser->getMessageBody('html') ;
+					$bHaveAttachment = NOT_HAVE_ATTATCHMENT ;
 
-					$strMailSql = "INSERT INTO mail_data 
-						(`id`,`list_mask`,`time`,`mail_header`,`mail_from`,`mail_to`,`mail_cc`,`title`,`content_text`,`content_html`) 
-						VALUES('','{$strListMask}',NOW(),'{$strMailHeader}','{$strFrom}','{$strTo}','{$strCC}','{$strSubject}','{$strText}','{$strHtml}')" ;
-					$command = Yii::app()->db->createCommand($strMailSql) ;
-					$command->execute() ;
-					break ;
-					//echo $command->getLastInsertId() . "\n";
-					//echo $strMailSql . "<br/>" ;
-					//$objAttachments	= $objData->getAttachments() ;
+					// save mail info
+					$objMaildata = new mail_data() ;
+					$objMaildata->list_mask		= $strListMask ;
+					$objMaildata->time			= date('Y-m-d H:i:s') ;
+					$objMaildata->mail_header	= $objParser->getHeader() ; 
+					$objMaildata->mail_from		= $objParser->getHeader('from') ;
+					$objMaildata->mail_to		= $objParser->getHeader('to') ;
+					$objMaildata->mail_cc		= $objParser->getHeader('cc') ;
+					$objMaildata->title			= $strSubject ;
+					$objMaildata->content_text  = $objParser->getMessageBody('text') ;
+					$objMaildata->content_html	= $objParser->getMessageBody('html') ;
+					$objMaildata->file_name		= $strFile ;
+
+					$aAttachments	= $objParser->getAttachments() ;
+					if( !empty($aAttachments) ){
+						$bHaveAttachment = HAVE_ATTATCHMENT ;	
+					}
+					$objMaildata->attachment	= $bHaveAttachment ;
+
+					if( !$objMaildata->save() ){
+						$errors = $objMaildata->getErrors() ;
+						$msg = array() ;                                 
+						foreach( $errors as $id => $error ){             
+							$msg[] = " $id: " . implode( ', ', $error ) ;
+						}                                                
+						$msg .= implode( '<br />',  $msg ) ; 
+						throw new Exception( $msg ) ;
+					}else{
+						self::_moveMail($strFile) ;
+					}
+					
+					// save mail attachment
+					if( $bHaveAttachment ){
+						foreach( $aAttachments as $aFile ){
+							$objAttatchment				= new mail_attachment() ;		
+							$objAttatchment->mail_id	= $objMaildata->id ;
+							$objAttatchment->path		= $aFile['attachment_path'] ;
+							$objAttatchment->file_name	= $aFile['file_name'] ;
+							$objAttatchment->file_type  = $aFile['file_type'] ;
+							$objAttatchment->file_description = $aFile['file_description'] ;
+
+							if( !$objAttatchment->save() ){
+								$errors = $objAttatchment->getErrors() ;
+								$msg = array() ;                                 
+								foreach( $errors as $id => $error ){             
+									$msg[] = " $id: " . implode( ', ', $error ) ;
+								}                                                
+								$msg .= implode( '<br />',  $msg ) ; 
+								throw new Exception( $msg ) ;
+							}else{
+								//save attachment file
+								$strOrigFile = "{$objAttatchment->path}/{$objAttatchment->mail_id}_{$objAttatchment->file_name}" ;
+								$nPos        = stripos(strtolower($objAttatchment->file_description), 'utf-8') ;
+								if( $nPos === false ){
+									$strFile = @mb_convert_encoding($strOrigFile, 'utf-8', 'gbk') ;
+								}else{
+									$strFile = $strOrigFile ; 
+								}
+								$handle		 = fopen($strFile, 'wb') ;
+								fwrite($handle, $aFile['file_body']) ;
+								fclose($handle) ;
+							}
+						}	
+					}
+				}else{
+					self::_moveMail($strFile) ;
 				}
 			}
 		}
+	}
+
+	private static function _moveMail($strFile, $strDest = MAIL_ARCHIVED_DIR){
+		// move mail file to archived directory
+		$strIncomingFile = MAIL_DIR_PATH . MAIL_INCOMING_DIR . '/' . $strFile ;
+		$strArchiveFile  = MailParser::generateHashDir( $strDest ) . '/' . $strFile ;
+		system("mv " . $strIncomingFile . " " . $strArchiveFile) ;	
 	}
 
 	private static function _getMailFiles(){
@@ -188,7 +249,7 @@ class MailParser{
 		$this->_mime->use_part_file_names = 1;
 
 		//创建邮件保存的Hash散列目录
-		$strDirPath = self::_generateHashDir() ;
+		$strDirPath = self::generateHashDir() ;
 
 		$this->_aParams = array(
 			'File'		=> $strMailFile ,			
@@ -199,9 +260,9 @@ class MailParser{
 		$this->_aDecodeData = NULL ; 
 	}
 
-	private static function _generateHashDir(){
+	public static function generateHashDir($strDestDir=MAIL_ARCHIVED_DIR){
 
-		$strMailPath = MAIL_DIR_PATH . MAIL_ARCHIVED_DIR ;
+		$strMailPath = MAIL_DIR_PATH . $strDestDir ;
 		$strHashDir  = date("Y") . "_" . date("m") ;
 		$strDirPath  = $strMailPath . '/' . $strHashDir ;
 		if(!file_exists( $strDirPath )){
@@ -269,30 +330,80 @@ class MailParser{
 
 		if( empty($this->_aDecodeData) ) return ;	
 
+		/**
+		  * 基本格式：
+		  *   [Parts] => Array(),
+		  *   [Body]  => '',
+		  *   即纯文本邮件，没有html格式
+		  */
+		if( isset($this->_aDecodeData[0]['Body']) ){
+			$strContentType = strtolower($this->_aDecodeData[0]['Headers']['content-type:']) ;
+			$strEncoding    = self::_getCharsetEncoding($strContentType) ;
+			$strBody		= $this->_aDecodeData[0]['Body'] ;
+			if( $strencoding != 'utf-8' ){
+				$strresult = mb_convert_encoding( $strbody, 'utf-8', $strencoding ) ;  
+			}else{
+				$strResult = $strBody ;
+			}
+			return $strResult ;
+		}
+
 		$aData = $this->_aDecodeData['Parts'] ;
+		/**
+		  * 判断是简单格式mail 还是复杂格式mail
+		  * 简单格式：
+		  *  [Parts] => Array
+		  *	  (
+		  *		  [0] => Array
+		  *		  (
+		  *			[Headers] => Array
+		  *			  (
+		  *				  [content-type:] => text/plain; charset="utf-8"
+		  *				  [content-transfer-encoding:] => base64
+		  *			  )
+		  *
+		  * 复杂格式：
+		  * [Parts] => Array
+		  *	 (
+		  *		 [0] => Array
+		  *			 (
+		  *				 [Headers] => Array
+		  *					 (
+		  *						 [content-type:] => multipart/alternative;boundary="_000_055701ccb89e608341602189c420com_"
+		  *					 )
+		  *				 [Parts] => Array
+		  *					 (
+		  *						 [0] => Array
+		  *							 (
+	      *								 [Headers] => Array
+		  *									 (
+		  *										 [content-type:] => text/plain; charset="gb2312"
+		  *										 [content-transfer-encoding:] => base64
+		  */
 		if( empty($aData) ) return ;
+		$aData = self::_getMailBodyRoot($aData) ;
 
 		$strResult = '' ;
 		$strType   = strtolower( $strType ) ;
 		switch($strType){
 			case 'text' :
-			  // $this->_aDecodeData['Parts'][0]['Headers'][content-type:] => text/plain; charset="utf-8"
+			  // $aData[0]['Headers'][content-type:] => text/plain; charset="utf-8"
 			  $strContentType = strtolower($aData[0]['Headers']['content-type:']) ;
 			  $strEncoding    = self::_getCharsetEncoding($strContentType) ;
 			  $strBody		  = $aData[0]['Body'] ;
 			  if( $strEncoding != 'utf-8' ){
-					$strResult = mb_convert_encoding( $strBody, 'UTF-8', $strContentType ) ;  
+					$strResult = mb_convert_encoding( $strBody, 'UTF-8', $strEncoding ) ;  
 			  }else{
 					$strResult = $strBody ;
 			  }
 			  break ;
 			case 'html' :
-			  // $this->_aDecodeData['Parts'][1]['Headers'][content-type:] => text/html; charset="utf-8" 
+			  // $aData[1]['Headers'][content-type:] => text/html; charset="utf-8" 
 			  $strContentType = strtolower($aData[1]['Headers']['content-type:']) ;
 			  $strEncoding    = self::_getCharsetEncoding($strContentType) ;
 			  $strBody		  = $aData[1]['Body'] ;
 			  if( $strEncoding != 'utf-8' ){
-					$strResult = mb_convert_encoding( $strBody, 'UTF-8', $strContentType ) ;  
+					$strResult = mb_convert_encoding( $strBody, 'UTF-8', $strEncoding ) ;  
 			  }else{
 					$strResult = $strBody ;
 			  }
@@ -301,6 +412,14 @@ class MailParser{
 			  // do nothing ;
 		}
 		return $strResult ;
+	}
+
+	private static function _getMailBodyRoot($aData){
+		$nPos  = stripos($aData[0]['Headers']['content-type:'], 'text/plain') ;
+		if( $nPos === false ){
+			$aData = self::_getMailBodyRoot( $aData[0]['Parts'] ) ; 
+		}			
+		return $aData ;
 	}
 
 	private static function _getCharsetEncoding($strEncoding){
@@ -313,7 +432,26 @@ class MailParser{
 	}
 
 	public function getAttachments(){
-		if( empty($this->_aDecodeData) ) return ;	
+		//邮件数据为空 或者 是纯文本邮件
+		if( empty($this->_aDecodeData) || isset( $this->_aDecodeData['Body'] ) ) return ;	
+
+		$aData = $this->_aDecodeData['Parts'] ;
+		$aAttachments = array() ;
+		$nPos  = stripos($aData[0]['Headers']['content-type:'], 'multipart/alternative') ;
+		if( $nPos !== false ){
+			$nIndex = 1 ;
+			for( $nIndex ; $nIndex < count($aData) ; $nIndex++ ){
+				$aAttachments[] = array(
+					'attachment_path'	=> self::generateHashDir( MAIL_ATTACHMENTS_DIR ) ,
+					'file_name'			=> isset($aData[$nIndex]['FileName']) ? $aData[$nIndex]['FileName'] : $aData[$nIndex]['Position'] ,
+					'file_type'			=> isset($aData[$nIndex]['FileDisposition']) ? $aData[$nIndex]['FileDisposition'] : '' ,
+					'file_description'	=> isset($aData[$nIndex]['Headers']['content-disposition:']) ? $aData[$nIndex]['Headers']['content-disposition:'] : $aData[$nIndex]['Headers']['content-type:'] ,
+					'file_body'			=> $aData[$nIndex]['Body'] ,
+				);
+			}
+		}
+
+		return $aAttachments ;
 	}
 }
 
