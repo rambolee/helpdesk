@@ -6,7 +6,7 @@ define('MAIL_DIR_PATH', '/www/vhost/mail.lanbolee.com/mail_data/') ;
 define('MAIL_INCOMING_DIR', 'incoming') ;
 define('MAIL_WORKING_DIR',  'working')  ;
 define('MAIL_ARCHIVED_DIR', 'archived') ;
-define('MAIL_ATTACHMENTS_DIR', 'attachment') ;
+define('MAIL_ATTACHMENTS_DIR', 'attachments') ;
 
 /**
   * database config 
