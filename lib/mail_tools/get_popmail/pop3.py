@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/home/libo03/.jumbo/bin/python
 # -*- coding:utf-8 -*-
 
 # pop3.py  
@@ -43,15 +43,18 @@ class mail_client:
 		mail_dir_info = self.mail_conf.get_mail_dir_info()
 		mail_dir_path = mail_dir_info['path'] + '/' + mail_dir_info['incoming_dir_name'] + '/'
 
+		i = 0;
 		if (total_count - cursor) >= max_query_count :
 			for i in range(cursor, max_query_count + cursor):
 				self.__getMail(i, mail_dir_path)
+				new_cursor = i + 1
+				self.mail_conf.set_mail_cursor( new_cursor )
 		elif total_count > cursor :
 			for i in range(cursor, total_count):
 				self.__getMail(i, mail_dir_path)
+				new_cursor = i + 1
+				self.mail_conf.set_mail_cursor( new_cursor )
 
-		new_cursor = i + 1
-		self.mail_conf.set_mail_cursor( new_cursor )
 
 
 	def __getMail(self, current_cursor, mail_dir_path):
@@ -76,10 +79,3 @@ if __name__ == '__main__':
 
 	r = mail_client(mail_conf, logger)
 	r.getMails()
-
-#stat = r.getStat() 	
-#mail_count = stat[0]
-#mail_size  = stat[1]
-
-#r.setCursor(10)
-#r.resetCursor()

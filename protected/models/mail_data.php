@@ -6,7 +6,7 @@
  * The followings are the available columns in table 'mail_data':
  * @property integer $id
  * @property string $list_mask
- * @property string $time
+ * @property string $create_time
  * @property string $mail_header
  * @property string $mail_from
  * @property string $mail_to
@@ -44,13 +44,13 @@ class mail_data extends CActiveRecord
 		// NOTE: you should only define rules for those attributes that
 		// will receive user inputs.
 		return array(
-			array('time, title', 'required'),
+			array('create_time, title', 'required'),
 			array('attachment', 'numerical', 'integerOnly'=>true),
 			array('list_mask, mail_from, mail_to, title, file_name', 'length', 'max'=>255),
 			array('mail_header, content_text, content_html', 'safe'),
 			// The following rule is used by search().
 			// Please remove those attributes that should not be searched.
-			array('id, list_mask, time, mail_header, mail_from, mail_to, mail_cc, title, content_text, content_html, file_name, attachment', 'safe', 'on'=>'search'),
+			array('id, list_mask, create_time, mail_header, mail_from, mail_to, mail_cc, title, content_text, content_html, file_name, attachment', 'safe', 'on'=>'search'),
 		);
 	}
 
@@ -73,7 +73,7 @@ class mail_data extends CActiveRecord
 		return array(
 			'id' => 'Id',
 			'list_mask' => 'List Mask',
-			'time' => 'Time',
+			'create_time' => 'Create Time',
 			'mail_header' => 'Mail Header',
 			'mail_from' => 'Mail From',
 			'mail_to' => 'Mail To',
@@ -101,7 +101,7 @@ class mail_data extends CActiveRecord
 
 		$criteria->compare('list_mask',$this->list_mask,true);
 
-		$criteria->compare('time',$this->time,true);
+		$criteria->compare('create_time',$this->create_time,true);
 
 		$criteria->compare('mail_header',$this->mail_header,true);
 

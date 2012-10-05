@@ -3,10 +3,20 @@
 @ini_set("max_execution_time", "1800");
 require_once("../lib/mail_tools/parse_mail/v2/rfc822_addresses.php") ;
 require_once("../lib/mail_tools/parse_mail/v2/mime_parser.php") ;
-require_once("./config/mail_config.php") ;
+#require_once("./config/mail_config.php") ;
 
 define('NOT_HAVE_ATTATCHMENT', 0) ;
 define('HAVE_ATTATCHMENT', 1) ;
+
+// emergency
+define('UNDEAL', 1);
+define('NORMAL_LEVEL',3) ;
+
+// mail_data type
+define('MAIN_MAIL', 1) ;   
+define('MERGED_MAIL', 2) ; 
+define('REPLAY_MAIL', 3) ; 
+define('NOTICE_INFO', 4) ; 
 
 class ParseMailCommand extends CConsoleCommand{
 
@@ -25,14 +35,22 @@ class ParseMailCommand extends CConsoleCommand{
 				$aDecode	 = $objParser->decodeMail() ;
 				if( self::_filterMails( $aDecode ) ){
 					// subject 取值要放在Mask计算前面，Mask可能会更改subject
-					$strSubject     = $objParser->getSubject('subject') ; 
-					$strListMask    = self::_buildMailListId($strSubject) ;
+					$strSubject     = $objParser->getSubject() ; 
+					$strOrigSubject = $strSubject ;
+					$bHaveMask		= true ;
+					$strListMask    = self::_buildMailListId($strSubject, $bHaveMask) ;
 					$bHaveAttachment = NOT_HAVE_ATTATCHMENT ;
 
 					// save mail info
 					$objMaildata = new mail_data() ;
+					$strDate = $objParser->getHeader('date') ;
+					if( !empty($strDate) ){
+						$nDate = strtotime($objParser->getHeader('date')) ;
+						$objMaildata->create_time = date('Y-m-d H:i:s', $nDate) ; 
+					}else{
+						$objMaildata->create_time = date('Y-m-d H:i:s') ;
+					}
 					$objMaildata->list_mask		= $strListMask ;
-					$objMaildata->time			= date('Y-m-d H:i:s') ;
 					$objMaildata->mail_header	= $objParser->getHeader() ; 
 					$objMaildata->mail_from		= $objParser->getHeader('from') ;
 					$objMaildata->mail_to		= $objParser->getHeader('to') ;
@@ -41,6 +59,11 @@ class ParseMailCommand extends CConsoleCommand{
 					$objMaildata->content_text  = $objParser->getMessageBody('text') ;
 					$objMaildata->content_html	= $objParser->getMessageBody('html') ;
 					$objMaildata->file_name		= $strFile ;
+					if( $bHaveMask ){
+						$objMaildata->type 	= REPLAY_MAIL ;
+					}else{
+						$objMaildata->type	= MAIN_MAIL ;
+					}
 
 					$aAttachments	= $objParser->getAttachments() ;
 					if( !empty($aAttachments) ){
@@ -48,7 +71,7 @@ class ParseMailCommand extends CConsoleCommand{
 					}
 					$objMaildata->attachment	= $bHaveAttachment ;
 
-					if( !$objMaildata->save() ){
+					if( !$objMaildata->save(true) ){
 						$errors = $objMaildata->getErrors() ;
 						$msg = array() ;                                 
 						foreach( $errors as $id => $error ){             
@@ -58,6 +81,39 @@ class ParseMailCommand extends CConsoleCommand{
 						throw new Exception( $msg ) ;
 					}else{
 						self::_moveMail($strFile) ;
+
+						/** 
+						 * create a new report_content
+						 * 如果是REPLAY_MAIL 则无需创建 report_content 
+						 * 只有MAIN_MAIL才创建report_content
+						 */
+						if( $objMaildata->type == MAIN_MAIL ){
+							$objContent 				= new report_content() ;
+							$objContent->list_mask 		= $strListMask ;
+							$objContent->title			= $strOrigSubject ;
+							$objContent->creator		= self::_getMailAddr($objMaildata->mail_from) ;
+							$objContent->creator_mail	= $objMaildata->mail_from ;
+							$objContent->create_time 	= $objMaildata->create_time ;
+							$objContent->last_update_time 	= date('Y-m-d H:i:s') ;
+							$objContent->status			= UNDEAL ; // 未处理
+							$objContent->emergency		= NORMAL_LEVEL ; // 一般
+
+							if( !$objContent->save(true) ){
+								$errors = $objContent->getErrors() ;
+								$msg = array() ;
+								foreach($errors as $id=> $error){
+									$msg[] = "$id:" . implode(', ',  $error) ;
+								}
+								$msg .= implode( '<br/>', $msg) ;
+								throw new Exception($msg) ;
+							}
+
+							// 写日志
+							self::_addLog($strListMask, $objContent->create_time, $objContent->creator, '创建CASE成功', NULL, NULL) ;
+						}else{
+							// 写日志
+							self::_addLog($strListMask, $objContent->create_time, $objContent->creator, '追加CASE成功', NULL, NULL) ;
+						}
 					}
 					
 					// save mail attachment
@@ -69,8 +125,9 @@ class ParseMailCommand extends CConsoleCommand{
 							$objAttatchment->file_name	= $aFile['file_name'] ;
 							$objAttatchment->file_type  = $aFile['file_type'] ;
 							$objAttatchment->file_description = $aFile['file_description'] ;
+							$objAttatchment->file_id	= $aFile['file_id'] ;
 
-							if( !$objAttatchment->save() ){
+							if( !$objAttatchment->save(true) ){
 								$errors = $objAttatchment->getErrors() ;
 								$msg = array() ;                                 
 								foreach( $errors as $id => $error ){             
@@ -100,6 +157,28 @@ class ParseMailCommand extends CConsoleCommand{
 		}
 	}
 
+	private static function _addLog($list_mask='', $time = NULL, $operator_name = NULL, $action = "", $remark="", $result = ""){
+		$time = empty($time) ? date('Y-m-d H:i:s') : $time ;
+		$strSql = "insert into `report_log` values (null, '{$list_mask}', '{$time}', '', '{$operator_name}', '', '{$action}', '{$remark}', '{$result}')";
+		Yii::app()->db->createCommand($strSql)->execute() ;	
+	}
+
+	/**
+	 * get real mail address from such string as rms<rms@baidu.com>
+	 */
+	private static function _getMailAddr($strMail){
+		// rms<rms@baidu.com>
+		$aMatch 	= array();
+		$strEmail 	= '' ;
+		$nPos = preg_match("/<[a-z]([a-z0-9]*[-_\.]?[a-z0-9]+)*@([a-z0-9]*[-_]?[a-z0-9]+)+[\.][a-z]{2,3}([\.][a-z]{2})?>/i", $strMail, $aMatch) ;	
+		if( $nPos > 0 ){                                             
+			// 获取 rms@baidu.com                                    
+			$strEmail = substr($aMatch[0], 1, strlen($aMatch[0])-2) ;
+		}
+
+		return $strEmail ;
+	}
+
 	private static function _moveMail($strFile, $strDest = MAIL_ARCHIVED_DIR){
 		// move mail file to archived directory
 		$strIncomingFile = MAIL_DIR_PATH . MAIL_INCOMING_DIR . '/' . $strFile ;
@@ -123,7 +202,7 @@ class ParseMailCommand extends CConsoleCommand{
 	private static function _filterMails($aDecodeData){
 		//邮件存储规则，并非所有邮件都保存入邮件队列中
 		$bPass = false ;
-		$aData = $aDecodeData['ExtractedAddresses'] ;
+		$aData = isset($aDecodeData['ExtractedAddresses']) ? $aDecodeData['ExtractedAddresses'] : NULL ;
 		if( !empty($aData) ){
 			$strTo = '' ;
 			$strCC = '' ;
@@ -147,12 +226,13 @@ class ParseMailCommand extends CConsoleCommand{
 		return $bPass ;
 	}
 
-	private static function _buildMailListId(&$strSubject){
+	private static function _buildMailListId(&$strSubject, &$bHaveMask){
 		// 匹配 LLL-NNNNN-NNN
 		$strMask = '' ;
 		if( !preg_match("/\[[A-Z]{3}-[1-9]{5}-[1-9]{3}\]/", $strSubject, $strMask) ){
 			$strMask    = "[" . self::_generateCaseMask() . "]" ; 
 			$strSubject = $strMask . $strSubject ;
+			$bHaveMask 	= false ;
 		}
 		return $strMask ;
 	}
@@ -303,11 +383,20 @@ class MailParser{
 				if( isset($aData[$strKey]) && !empty($aData[$strKey]) ){
 					$aTemp = array() ;
 					foreach( $aData[$strKey] as $aList ){
+						if(!isset($aList['name'])){
+							$aList['name'] = $aList['address'] ;
+						}
 						$aTemp[] = "{$aList['name']} <{$aList['address']}>" ;	
 					}	
 					$strResult .= join( ';', $aTemp ) ;
 				}
 			  break ;
+			case 'date' :
+				$strKey = 'date:' ;
+				if( isset($this->_aDecodeData['Headers'][$strKey]) && !empty($this->_aDecodeData['Headers'][$strKey]) ){
+					$strResult = $this->_aDecodeData['Headers'][$strKey] ;
+				}
+				break ;
 			default :
 			  $strResult = print_r($this->_aDecodeData['Headers'], true) ;
 		}
@@ -318,10 +407,14 @@ class MailParser{
 	public function getSubject(){
 
 		if( empty($this->_aDecodeData) ) return ;	
-		$strSubject  = $this->_aDecodeData['DecodedHeaders']['subject:'][0][0]['Value'] ;
-		$strEncoding = strtoupper($this->_aDecodeData['DecodedHeaders']['subject:'][0][0]['Encoding']) ;
-		if( $strEncoding != 'UTF-8' ){
-			$strSubject = mb_convert_encoding( $strSubject, 'UTF-8', $strEncoding ) ;
+		if( isset( $this->_aDecodeData['DecodedHeaders'] ) ){
+			$strSubject  = $this->_aDecodeData['DecodedHeaders']['subject:'][0][0]['Value'] ;
+			$strEncoding = strtoupper($this->_aDecodeData['DecodedHeaders']['subject:'][0][0]['Encoding']) ;
+			if( $strEncoding != 'UTF-8' ){
+				$strSubject = mb_convert_encoding( $strSubject, 'UTF-8', $strEncoding ) ;
+			}
+		}else{
+			$strSubject = '' ;
 		}
 		return $strSubject ;
 	}
@@ -336,12 +429,12 @@ class MailParser{
 		  *   [Body]  => '',
 		  *   即纯文本邮件，没有html格式
 		  */
-		if( isset($this->_aDecodeData[0]['Body']) ){
-			$strContentType = strtolower($this->_aDecodeData[0]['Headers']['content-type:']) ;
+		if( isset($this->_aDecodeData['Body']) && !empty($this->_aDecodeData['Body']) ){
+			$strContentType = strtolower($this->_aDecodeData['Headers']['content-type:']) ;
 			$strEncoding    = self::_getCharsetEncoding($strContentType) ;
-			$strBody		= $this->_aDecodeData[0]['Body'] ;
-			if( $strencoding != 'utf-8' ){
-				$strresult = mb_convert_encoding( $strbody, 'utf-8', $strencoding ) ;  
+			$strBody		= $this->_aDecodeData['Body'] ;
+			if( !empty($strEncoding) && $strEncoding != 'utf-8' ){
+				$strResult = mb_convert_encoding( $strBody, 'utf-8', $strEncoding ) ;  
 			}else{
 				$strResult = $strBody ;
 			}
@@ -447,6 +540,7 @@ class MailParser{
 					'file_type'			=> isset($aData[$nIndex]['FileDisposition']) ? $aData[$nIndex]['FileDisposition'] : '' ,
 					'file_description'	=> isset($aData[$nIndex]['Headers']['content-disposition:']) ? $aData[$nIndex]['Headers']['content-disposition:'] : $aData[$nIndex]['Headers']['content-type:'] ,
 					'file_body'			=> $aData[$nIndex]['Body'] ,
+					'file_id' 			=> isset($aData[$nIndex]['Headers']['content-id:']) ? $aData[$nIndex]['Headers']['content-id:'] : '',
 				);
 			}
 		}

@@ -19,10 +19,9 @@ return array(
 	'components'=>array(
 		// uncomment the following to use a MySQL database
 		'db'=>array(
-			//'connectionString' => 'mysql:host=jx-sys-atm02.vm.baidu.com;dbname=help_desk',
 			'connectionString' => 'mysql:host=localhost;dbname=help_desk',
-			'username' => 'root',
-			'password' => '123456',
+			'username' => 'helpdesk_admin',
+			'password' => 'helpdesk_passwd',
 			'charset' => 'utf8',
 		),
 		'log'=>array(
