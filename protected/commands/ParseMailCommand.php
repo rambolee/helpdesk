@@ -20,8 +20,14 @@ define('NOTICE_INFO', 4) ;
 
 class ParseMailCommand extends CConsoleCommand{
 
-	public function run(){
-		$this->_parseMail() ;
+	public function run($args){
+		if(count($args) == 0){
+			$this->_parseMail() ;
+		}else{
+			$objParser = new MailParser($args[0]) ;
+			$aDecode   = $objParser->decodeMail();
+			print_r($aDecode) ;
+		}	
 	}
 
 	private function _parseMail(){
@@ -382,9 +388,11 @@ class MailParser{
 				$strKey = "{$strType}:" ;
 				if( isset($aData[$strKey]) && !empty($aData[$strKey]) ){
 					$aTemp = array() ;
-					foreach( $aData[$strKey] as $aList ){
+					foreach( $aData[$strKey] as $nIndex => $aList ){
 						if(!isset($aList['name'])){
 							$aList['name'] = $aList['address'] ;
+						}elseif(isset($aList['encoding']) && $aList['encoding'] != 'utf-8'){
+							$aList['name'] = mb_convert_encoding($aList['name'], 'UTF-8', $aList['encoding']);
 						}
 						$aTemp[] = "{$aList['name']} <{$aList['address']}>" ;	
 					}	
@@ -438,10 +446,12 @@ class MailParser{
 			}else{
 				$strResult = $strBody ;
 			}
+			if($strType == 'html'){
+				$strResult = "<pre>{$strResult}</pre>";
+			}
 			return $strResult ;
 		}
 
-		$aData = $this->_aDecodeData['Parts'] ;
 		/**
 		  * 判断是简单格式mail 还是复杂格式mail
 		  * 简单格式：
@@ -473,46 +483,97 @@ class MailParser{
 		  *										 [content-type:] => text/plain; charset="gb2312"
 		  *										 [content-transfer-encoding:] => base64
 		  */
-		if( empty($aData) ) return ;
-		$aData = self::_getMailBodyRoot($aData) ;
+		$aParts= $this->_aDecodeData['Parts'] ;
+		if( empty($aParts) ) return ;
+		$aParts = self::_getMailBodyRoot($aParts) ;
 
 		$strResult = '' ;
-		$strType   = strtolower( $strType ) ;
-		switch($strType){
-			case 'text' :
-			  // $aData[0]['Headers'][content-type:] => text/plain; charset="utf-8"
-			  $strContentType = strtolower($aData[0]['Headers']['content-type:']) ;
-			  $strEncoding    = self::_getCharsetEncoding($strContentType) ;
-			  $strBody		  = $aData[0]['Body'] ;
-			  if( $strEncoding != 'utf-8' ){
-					$strResult = mb_convert_encoding( $strBody, 'UTF-8', $strEncoding ) ;  
-			  }else{
-					$strResult = $strBody ;
-			  }
-			  break ;
-			case 'html' :
-			  // $aData[1]['Headers'][content-type:] => text/html; charset="utf-8" 
-			  $strContentType = strtolower($aData[1]['Headers']['content-type:']) ;
-			  $strEncoding    = self::_getCharsetEncoding($strContentType) ;
-			  $strBody		  = $aData[1]['Body'] ;
-			  if( $strEncoding != 'utf-8' ){
-					$strResult = mb_convert_encoding( $strBody, 'UTF-8', $strEncoding ) ;  
-			  }else{
-					$strResult = $strBody ;
-			  }
-			  break ;
-			default :
-			  // do nothing ;
+
+		/**
+		 * 如果$aData[0]['Headers'][content-type:] => text/plain; charset="****" 的情况
+		 * 那么通常$aData[1]['Headers'][content-type:] => text/html; charset="****" 的情况
+		 *
+		 * 如果$aData[0]['Headers'][content-type:] => text/html; charset="*****" 的情况
+		 * 后续可能都是line的附件
+		 */
+	  	// $aData[0]['Headers'][content-type:] => text/plain; charset="utf-8"
+	  	// $aData[0]['Headers'][content-type:] => text/html; charset="gb2312"
+	  	// $aData[0]['Headers'][content-type:] => text/html; charset="utf-8" 
+	    $strContentType = strtolower($aParts[0]['Headers']['content-type:']) ;
+	    $strMimeType    = self::_getMimeType($strContentType);
+		if($strMimeType == 'html'){
+			$strEncoding    = self::_getCharsetEncoding($strContentType) ;
+			$strBody		= $aParts[0]['Body'] ;
+
+			$strType   = strtolower( $strType ) ;
+			switch($strType){
+				case 'text' :
+				  if( $strEncoding != 'utf-8' ){
+						$strResult = mb_convert_encoding( $strBody, 'UTF-8', $strEncoding ) ;  
+				  }else{
+						$strResult = $strBody ;
+				  }
+				  if($strMimeType == 'html'){
+						$strResult = "<pre>".strip_tags($strResult, '<pre><p>') ."</pre>" ;
+				  }
+				  break ;
+				case 'html' :
+				  if( !empty($strEncoding) && $strEncoding != 'utf-8' ){
+						$strResult = mb_convert_encoding( $strBody, 'UTF-8', $strEncoding ) ;  
+				  }else{
+						$strResult = $strBody ;
+				  }
+				  break ;
+				default :
+				  // do nothing ;
+			}
+		}elseif($strMimeType == 'text'){ // 区别在于body的获取上 text版本 index[0]= text index[1]=html
+			$strEncoding    = self::_getCharsetEncoding($strContentType) ;
+			$strType   = strtolower( $strType ) ;
+			switch($strType){
+				case 'text' :
+				  $strBody		= $aParts[0]['Body'] ;
+				  if( $strEncoding != 'utf-8' ){
+						$strResult = mb_convert_encoding( $strBody, 'UTF-8', $strEncoding ) ;  
+				  }else{
+						$strResult = $strBody ;
+				  }
+				  $strResult = "<pre>".strip_tags($strResult, '<pre><p>') ."</pre>" ;
+				  break ;
+				case 'html' :
+				  $strBody		= $aParts[1]['Body'] ; // 与text的不同点
+				  if( !empty($strEncoding) && $strEncoding != 'utf-8' ){
+						$strResult = mb_convert_encoding( $strBody, 'UTF-8', $strEncoding ) ;  
+				  }else{
+						$strResult = $strBody ;
+				  }
+				  break ;
+				default :
+				  // do nothing ;
+			}
 		}
 		return $strResult ;
 	}
 
 	private static function _getMailBodyRoot($aData){
 		$nPos  = stripos($aData[0]['Headers']['content-type:'], 'text/plain') ;
-		if( $nPos === false ){
+		if( $nPos === false && !empty($aData[0]['Parts']) ){
 			$aData = self::_getMailBodyRoot( $aData[0]['Parts'] ) ; 
 		}			
 		return $aData ;
+	}
+
+	private static function _getMimeType($strContentType){
+		$aType = explode(';', $strContentType) ;
+		$strMimeType = trim($aType[0]) ;
+		switch($strMimeType){
+			case 'text/plain' :
+				return 'text' ;
+			case 'text/html' :
+				return 'html' ;
+			default :
+				return $strMimeType ;	
+		}
 	}
 
 	private static function _getCharsetEncoding($strEncoding){
@@ -521,26 +582,26 @@ class MailParser{
 		if( preg_match('/charset\s*=\s*["|\']([a-zA-Z0-9-\s]+)["|\']/', $strEncoding, $aMatch) ){
 			$strResult = $aMatch[1] ;	
 		}
-		return $strResult ;
+		return strtolower($strResult) ;
 	}
 
 	public function getAttachments(){
 		//邮件数据为空 或者 是纯文本邮件
 		if( empty($this->_aDecodeData) || isset( $this->_aDecodeData['Body'] ) ) return ;	
 
-		$aData = $this->_aDecodeData['Parts'] ;
+		$aParts = $this->_aDecodeData['Parts'] ;
 		$aAttachments = array() ;
-		$nPos  = stripos($aData[0]['Headers']['content-type:'], 'multipart/alternative') ;
-		if( $nPos !== false ){
-			$nIndex = 1 ;
-			for( $nIndex ; $nIndex < count($aData) ; $nIndex++ ){
+		foreach($aParts as $nIndex => $aPart){
+			$strContentType = strtolower($aPart['Headers']['content-type:']) ;
+			$strMimeType    = self::_getMimeType($strContentType);
+			if($strMimeType !='text' && $strMimeType !='html' && isset($aPart['FileName']) ){
 				$aAttachments[] = array(
 					'attachment_path'	=> self::generateHashDir( MAIL_ATTACHMENTS_DIR ) ,
-					'file_name'			=> isset($aData[$nIndex]['FileName']) ? $aData[$nIndex]['FileName'] : $aData[$nIndex]['Position'] ,
-					'file_type'			=> isset($aData[$nIndex]['FileDisposition']) ? $aData[$nIndex]['FileDisposition'] : '' ,
-					'file_description'	=> isset($aData[$nIndex]['Headers']['content-disposition:']) ? $aData[$nIndex]['Headers']['content-disposition:'] : $aData[$nIndex]['Headers']['content-type:'] ,
-					'file_body'			=> $aData[$nIndex]['Body'] ,
-					'file_id' 			=> isset($aData[$nIndex]['Headers']['content-id:']) ? $aData[$nIndex]['Headers']['content-id:'] : '',
+					'file_name'			=> isset($aPart['FileName']) ? $aPart['FileName'] : $aPart['Position'] ,
+					'file_type'			=> isset($aPart['FileDisposition']) ? $aPart['FileDisposition'] : '' ,
+					'file_description'	=> isset($aPart['Headers']['content-disposition:']) ? $aPart['Headers']['content-disposition:'] : $aPart['Headers']['content-type:'] ,
+					'file_body'			=> $aPart['Body'] ,
+					'file_id' 			=> isset($aPart['Headers']['content-id:']) ? $aPart['Headers']['content-id:'] : '',
 				);
 			}
 		}
